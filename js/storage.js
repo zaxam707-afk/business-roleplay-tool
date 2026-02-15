@@ -22,7 +22,7 @@ function openDB() {
   });
 }
 
-// 履歴を保存（日付・録音・スコア・フィードバック）
+// 履歴を保存（日付・録音・スコア・フィードバック・会話文字起こし）
 async function saveHistory(record) {
   const db = await openDB();
   const toSave = {
@@ -33,6 +33,7 @@ async function saveHistory(record) {
     rank: record.rank,
     feedbacks: record.feedbacks,
     recording: record.recording || null,
+    transcript: record.transcript || [],
   };
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_HISTORY, 'readwrite');

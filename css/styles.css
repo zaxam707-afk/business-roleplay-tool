@@ -227,8 +227,8 @@ body {
 
 .history-item {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 12px;
   padding: 16px 20px;
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -241,10 +241,42 @@ body {
   border-color: var(--primary);
 }
 
-.history-main {
+.history-item .history-main {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.history-item .history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.history-transcript {
+  font-size: 0.85rem;
+  color: var(--text-light);
+  max-height: 120px;
+  overflow-y: auto;
+  padding: 12px;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+.history-transcript .transcript-line {
+  margin-bottom: 6px;
+  line-height: 1.5;
+}
+
+.history-transcript .transcript-line.npc .transcript-speaker {
+  color: var(--primary-light);
+}
+
+.history-transcript .transcript-line.user .transcript-speaker {
+  color: var(--accent);
 }
 
 .history-date {
@@ -292,6 +324,26 @@ body {
   color: var(--text-lighter);
   cursor: not-allowed;
   opacity: 0.6;
+}
+
+.btn-stop-recording {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--danger);
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+}
+
+.btn-stop-recording:hover {
+  background: #DC2626;
+  transform: scale(1.05);
 }
 
 .btn-delete-history {
@@ -477,6 +529,68 @@ body {
 }
 
 /* シナリオカードグリッド */
+/* シナリオを画面下部にアイコンで並べる */
+.scenario-bottom-area {
+  margin-top: auto;
+  padding: 20px 24px 24px;
+  border-top: 1px solid var(--border);
+}
+
+.scenario-icons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 16px;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.scenario-icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 20px;
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all var(--transition);
+  min-width: 100px;
+}
+
+.scenario-icon:hover {
+  border-color: var(--primary);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.scenario-icon .icon {
+  font-size: 2.5rem;
+  line-height: 1;
+}
+
+.scenario-icon .title {
+  font-size: 0.8rem;
+  color: var(--text-light);
+  text-align: center;
+  line-height: 1.3;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.scenario-footer-hint {
+  text-align: center;
+  color: var(--text-lighter);
+  font-size: 0.85rem;
+  padding: 12px;
+}
+
+/* 旧カード用（互換） */
 .scenario-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -1242,6 +1356,28 @@ body {
    レスポンシブ
    ========================================== */
 @media (max-width: 640px) {
+  .scenario-bottom-area {
+    padding: 16px;
+  }
+
+  .scenario-icons {
+    gap: 12px;
+  }
+
+  .scenario-icon {
+    min-width: 80px;
+    padding: 12px 14px;
+  }
+
+  .scenario-icon .icon {
+    font-size: 2rem;
+  }
+
+  .scenario-icon .title {
+    font-size: 0.75rem;
+    max-width: 80px;
+  }
+
   .scenario-grid {
     grid-template-columns: 1fr;
     padding: 20px 16px;

@@ -23,6 +23,9 @@ const state = {
   selectedSetId: 'default',
   mediaRecorder: null,
   recordedChunks: [],
+  historyPlaybackAudio: null,
+  historyPlaybackId: null,
+  conversationLog: [],
 };
 
 // ========================================
@@ -30,6 +33,13 @@ const state = {
 // ========================================
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
+
+function escapeHtml(str) {
+  if (typeof str !== 'string') return '';
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
 
 const screens = {
   top: $('#screen-top'),
@@ -41,7 +51,7 @@ const screens = {
 // 音声機能（Web Speech API）
 // ========================================
 
-// 音声合成（TTS）- NPCが話す
+// 音声合成（TTS）- NPCが話す（自然なイントネーション）
 function speakText(text, onEnd) {
   if (!state.voiceMode || !window.speechSynthesis) {
     if (onEnd) onEnd();
@@ -52,13 +62,17 @@ function speakText(text, onEnd) {
 
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = 'ja-JP';
-  utterance.rate = 2;    // 2倍速
-  utterance.pitch = 1;
+  utterance.rate = 1.15;   // やや速めだが自然な速度
+  utterance.pitch = 1.02;  // わずかに高めで明るい印象
+  utterance.volume = 1;
 
-  // 日本語音声を優先
+  // 日本語音声を優先（自然な音声を選択）
   const voices = speechSynthesis.getVoices();
-  const jaVoice = voices.find(v => v.lang.startsWith('ja'));
-  if (jaVoice) utterance.voice = jaVoice;
+  const jaVoices = voices.filter(v => v.lang.startsWith('ja'));
+  const preferred = jaVoices.find(v => v.name.includes('Google') || v.name.includes('Natural') || v.name.includes('Premium'))
+    || jaVoices.find(v => v.name.includes('Haruka') || v.name.includes('Ichiro') || v.name.includes('Microsoft'))
+    || jaVoices[0];
+  if (preferred) utterance.voice = preferred;
 
   utterance.onend = () => {
     state.isSpeaking = false;
@@ -94,7 +108,7 @@ function releaseMicrophoneStream() {
   }
 }
 
-// 録音開始
+// 録音開始（AIとユーザーの会話全体を録音）
 function startRecording() {
   if (!state.mediaStream || !window.MediaRecorder) return;
   state.recordedChunks = [];
@@ -348,6 +362,62 @@ const SCENARIO_SCHEMA = `各シナリオは以下のJSON形式で、配列とし
 ]
 各シナリオは5ステップ程度、各ステップに3つのchoicesを用意してください。`;
 
+// ユーザーの発話に対するAIの応答を生成
+async function generateNPCResponse(apiKey, scenario, currentStep, userSpeech) {
+  const step = scenario.steps[currentStep];
+  const nextStep = scenario.steps[currentStep + 1];
+  const nextNpcMessage = nextStep?.npcMessage || '承知しました。';
+  const convHistory = (state.conversationLog || [])
+    .slice(-6)
+    .map(t => `${t.speaker}: ${t.text}`)
+    .join('\n');
+
+  const systemPrompt = `あなたはロープレの相手役（${scenario.npcName}）です。
+シナリオ: ${scenario.title}
+あなたが話している相手の役割: ${scenario.playerRole}
+
+【重要】あなたの役割に徹してください。お客様役・架電先の場合は、アポインター・営業側の言動（日程提案、訪問の申し出、アポ取得の誘導など）は絶対にしないこと。相手の質問や提案に対して答える立場で応答すること。役の混同を避け、一貫して自分の役だけを演じること。特に「お客様役」「架電先」のときは営業役と混同せず、お客様としての応答に徹すること。
+相手の発言に対して、自然に応答してください。シナリオの流れに沿いながら、相手の言葉をしっかり受け止めて返答すること。
+1〜3文程度で簡潔に。説明やメタコメントは不要。役になりきって話すこと。`;
+
+  const userPrompt = `【現在の状況】${step.situation || ''}
+
+【会話履歴】
+${convHistory || '(なし)'}
+
+【相手の発言】${userSpeech}
+
+【シナリオの流れの参考】次に言うと良い内容: ${nextNpcMessage}
+
+上記を参考に、相手の発言に対して自然に応答してください。応答のみを返し、引用符や説明は不要です。`;
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.7,
+      max_tokens: 200,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `API エラー: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const content = (data.choices?.[0]?.message?.content || '').trim();
+  return content || nextNpcMessage;
+}
+
 async function generateScenariosFromPrompt(prompt, apiKey) {
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -426,6 +496,27 @@ function renderScenarioSets() {
   });
 }
 
+// 履歴録音の再生を停止
+function stopHistoryPlayback() {
+  if (state.historyPlaybackAudio) {
+    state.historyPlaybackAudio.pause();
+    state.historyPlaybackAudio.currentTime = 0;
+    state.historyPlaybackAudio = null;
+  }
+  const playingId = state.historyPlaybackId;
+  state.historyPlaybackId = null;
+  // 再生中だった項目のUIをリセット
+  if (playingId != null) {
+    const item = document.querySelector(`.history-item[data-id="${playingId}"]`);
+    if (item) {
+      const playBtn = item.querySelector('.btn-play-recording');
+      const stopBtn = item.querySelector('.btn-stop-recording');
+      if (playBtn && !playBtn.disabled) playBtn.style.display = '';
+      if (stopBtn) stopBtn.style.display = 'none';
+    }
+  }
+}
+
 // ========================================
 // 履歴一覧描画
 // ========================================
@@ -440,32 +531,59 @@ async function renderHistoryList() {
           const date = new Date(h.date);
           const dateStr = date.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
           const hasRecording = h.recording && h.recording.size > 0;
+          const transcript = h.transcript && Array.isArray(h.transcript) ? h.transcript : [];
+          const transcriptHtml = transcript.length > 0
+            ? `<div class="history-transcript">${transcript.map(t => `<div class="transcript-line ${t.speaker === 'AI' ? 'npc' : 'user'}"><span class="transcript-speaker">${t.speaker}:</span> ${escapeHtml(t.text)}</div>`).join('')}</div>`
+            : '';
           return `
             <div class="history-item" data-id="${h.id}">
-              <div class="history-main">
-                <span class="history-date">${dateStr}</span>
-                <span class="history-title">${h.scenarioTitle || 'シナリオ'}</span>
-                <span class="history-score">${h.percentage || 0}点 (${h.rank || '-'})</span>
+              <div class="history-header">
+                <div class="history-main">
+                  <span class="history-date">${dateStr}</span>
+                  <span class="history-title">${escapeHtml(h.scenarioTitle || 'シナリオ')}</span>
+                  <span class="history-score">${h.percentage || 0}点 (${escapeHtml(h.rank || '-')})</span>
+                </div>
+                <div class="history-actions">
+                  <button type="button" class="btn-play-recording ${hasRecording ? '' : 'disabled'}" data-id="${h.id}" ${hasRecording ? 'title="録音を再生"' : 'title="録音なし（音声モードONで実施すると録音されます）" disabled'} data-has-recording="${hasRecording}">▶</button>
+                  <button type="button" class="btn-stop-recording" data-id="${h.id}" title="再生を停止" style="display:none">⏹</button>
+                  <button type="button" class="btn-delete-history" data-id="${h.id}" title="削除">削除</button>
+                </div>
               </div>
-              <div class="history-actions">
-                <button type="button" class="btn-play-recording ${hasRecording ? '' : 'disabled'}" data-id="${h.id}" ${hasRecording ? 'title="録音を再生"' : 'title="録音なし（音声モードONで実施すると録音されます）" disabled'} data-has-recording="${hasRecording}">▶</button>
-                <button type="button" class="btn-delete-history" data-id="${h.id}" title="削除">削除</button>
-              </div>
+              ${transcriptHtml}
             </div>
           `;
         }).join('');
 
     container.querySelectorAll('.btn-play-recording').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
+      btn.addEventListener('click', async () => {
         if (btn.disabled || btn.classList.contains('disabled')) return;
         const id = parseInt(btn.dataset.id, 10);
+        stopHistoryPlayback();
         const record = await getHistoryById(id);
         if (record?.recording && record.recording.size > 0) {
           const url = URL.createObjectURL(record.recording);
           const audio = new Audio(url);
+          state.historyPlaybackAudio = audio;
+          state.historyPlaybackId = id;
+          btn.style.display = 'none';
+          const item = btn.closest('.history-item');
+          const stopBtn = item?.querySelector('.btn-stop-recording');
+          if (stopBtn) stopBtn.style.display = '';
           audio.play();
-          audio.onended = () => URL.revokeObjectURL(url);
+          audio.onended = () => {
+            URL.revokeObjectURL(url);
+            state.historyPlaybackAudio = null;
+            state.historyPlaybackId = null;
+            btn.style.display = '';
+            if (stopBtn) stopBtn.style.display = 'none';
+          };
         }
+      });
+    });
+    container.querySelectorAll('.btn-stop-recording').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = parseInt(btn.dataset.id, 10);
+        if (state.historyPlaybackId === id) stopHistoryPlayback();
       });
     });
     container.querySelectorAll('.btn-delete-history').forEach(btn => {
@@ -481,42 +599,31 @@ async function renderHistoryList() {
 }
 
 // ========================================
-// トップ画面：シナリオカード生成
+// トップ画面：シナリオを画面下部にアイコンで表示
 // ========================================
 function renderScenarioCards() {
   const container = $('#scenario-list');
+  if (!container) return;
   container.innerHTML = '';
 
   const scenarios = getScenarios();
   scenarios.forEach((scenario, index) => {
-    const card = document.createElement('div');
-    card.className = 'scenario-card';
-    card.style.animationDelay = `${index * 0.1}s`;
-    card.style.animation = `slideUp 0.5s ease ${index * 0.1}s both`;
-
-    // 難易度ドット
-    let difficultyDots = '';
-    for (let i = 1; i <= 3; i++) {
-      difficultyDots += `<span class="difficulty-dot ${i <= scenario.difficulty ? 'active' : ''}"></span>`;
-    }
-
-    card.innerHTML = `
-      <div class="card-header">
-        <div class="card-icon">${scenario.icon}</div>
-        <div class="card-title">${scenario.title}</div>
-      </div>
-      <div class="card-desc">${scenario.description}</div>
-      <div class="card-meta">
-        <span>📁 ${scenario.category}</span>
-        <span>⏱ ${scenario.duration}</span>
-        <span class="difficulty">
-          難易度：${difficultyDots}
-        </span>
-      </div>
+    const iconEl = document.createElement('div');
+    iconEl.className = 'scenario-icon';
+    iconEl.style.animationDelay = `${index * 0.05}s`;
+    iconEl.style.animation = `slideUp 0.4s ease ${index * 0.05}s both`;
+    iconEl.innerHTML = `
+      <span class="icon">${scenario.icon}</span>
+      <span class="title" title="${scenario.title}">${scenario.title}</span>
     `;
-
-    card.addEventListener('click', () => startScenario(scenario));
-    container.appendChild(card);
+    iconEl.addEventListener('click', async () => {
+      // ロープレ開始前にマイク許可を取得（開始後のダイアログ表示を防ぐ）
+      if (state.voiceMode && navigator.mediaDevices?.getUserMedia) {
+        await requestMicrophonePermissionOnce();
+      }
+      startScenario(scenario);
+    });
+    container.appendChild(iconEl);
   });
 }
 
@@ -528,6 +635,7 @@ async function startScenario(scenario) {
   state.currentStep = 0;
   state.scores = [];
   state.feedbacks = [];
+  state.conversationLog = [];
   state.choicesDisabled = false;
 
   if (state.voiceMode) {
@@ -597,7 +705,7 @@ function showTypingIndicator(name, icon, npcMessage, callback) {
   chatArea.appendChild(typingMsg);
   scrollChatToBottom();
 
-  const typingDuration = state.voiceMode ? 800 : 1000 + Math.random() * 500;
+  const typingDuration = state.voiceMode ? 400 : 600 + Math.random() * 300;
 
   setTimeout(() => {
     const indicator = document.getElementById('typing-indicator');
@@ -620,6 +728,15 @@ function showTypingIndicator(name, icon, npcMessage, callback) {
 // ========================================
 function addChatMessage(type, name, icon, message) {
   const chatArea = $('#chat-area');
+
+  // 会話ログに追加（履歴の文字起こし用）
+  if (state.conversationLog && message) {
+    state.conversationLog.push({
+      speaker: type === 'npc' ? 'AI' : 'あなた',
+      name,
+      text: message,
+    });
+  }
 
   const msgEl = document.createElement('div');
   msgEl.className = `chat-msg ${type}`;
@@ -700,85 +817,75 @@ function hideChoices() {
 }
 
 // ========================================
-// 自由発話のハンドリング（発話内容を類似度でマッチング）
+// 自由発話のハンドリング（AIが発話内容に応答）
 // ========================================
-function handleFreeSpeech(userSpeech, choices) {
+async function handleFreeSpeech(userSpeech, choices) {
   if (state.choicesDisabled) return;
   state.choicesDisabled = true;
 
   const scenario = state.currentScenario;
   const step = scenario.steps[state.currentStep];
 
+  // スコア計算（履歴用・非表示）
   const { index: choiceIndex, score: matchScore } = findBestMatchingChoice(userSpeech, choices);
   const choice = choiceIndex >= 0 ? step.choices[choiceIndex] : step.choices[0];
-
-  // マッチングが弱い場合は最低スコアを適用
   const effectiveScore = matchScore >= 0.15 ? choice.score : Math.min(choice.score, 40);
-  const effectiveChoice = { ...choice, score: effectiveScore };
-
   state.scores.push(effectiveScore);
   state.feedbacks.push({
     step: state.currentStep + 1,
     text: choice.feedback,
     isGood: choice.isGood,
-    choiceText: choice.text,
     userSpeech: userSpeech,
     score: effectiveScore,
-    matchScore: matchScore,
   });
 
   hideChoices();
 
-  // ユーザーの実際の発言をチャットに追加
+  // ユーザーの発言をチャットに追加
   addChatMessage('user', scenario.playerRole, scenario.playerIcon, userSpeech);
 
-  // フィードバック表示（マッチした選択肢の参考例も表示）
-  showInlineFeedback(effectiveChoice, userSpeech, choice.text, matchScore);
+  // AIの応答を生成して表示（点数・コメントは表示しない）
+  const apiKey = localStorage.getItem('roleplay_api_key')?.trim();
+  let npcResponse = null;
+  const isNotLastStep = state.currentStep < scenario.steps.length - 1;
 
-  // 次のステップへ進む or 結果画面
-  setTimeout(async () => {
-    if (state.currentStep < scenario.steps.length - 1) {
+  if (apiKey && isNotLastStep) {
+    try {
+      npcResponse = await generateNPCResponse(apiKey, scenario, state.currentStep, userSpeech);
+    } catch (e) {
+      console.warn('AI応答エラー:', e);
+    }
+  }
+
+  if (!npcResponse && isNotLastStep) {
+    npcResponse = scenario.steps[state.currentStep + 1]?.npcMessage || '承知しました。';
+  }
+
+  const isLastStep = state.currentStep >= scenario.steps.length - 1;
+
+  if (npcResponse && !isLastStep) {
+    // AIの応答を表示（タイピング→TTS→次のステップ）
+    showTypingIndicator(scenario.npcName, scenario.npcIcon, npcResponse, () => {
+      addChatMessage('npc', scenario.npcName, scenario.npcIcon, npcResponse);
       state.currentStep++;
       state.choicesDisabled = false;
-      renderStep();
-    } else {
-      const recordingBlob = await stopRecording();
-      stopSpeechRecognition();
-      window.speechSynthesis?.cancel();
-      setTimeout(() => showResult(recordingBlob), 800);
-    }
-  }, 2200);
-}
-
-// ========================================
-// インラインフィードバック（自由発話時は参考例も表示）
-// ========================================
-function showInlineFeedback(choice, userSpeech, matchedExample, matchScore) {
-  const chatArea = $('#chat-area');
-  const feedbackEl = document.createElement('div');
-  feedbackEl.className = 'chat-msg npc';
-  feedbackEl.style.maxWidth = '85%';
-
-  const icon = choice.isGood ? '✅' : '💡';
-  const bgColor = choice.isGood ? '#ECFDF5' : '#FFF7ED';
-  const borderColor = choice.isGood ? '#A7F3D0' : '#FDE68A';
-  const textColor = choice.isGood ? '#065F46' : '#92400E';
-
-  const matchInfo = matchScore !== undefined && matchScore < 0.3
-    ? `<div style="margin-top: 6px; font-size: 0.78rem; opacity: 0.8;">参考例: ${matchedExample || choice.text}</div>`
-    : '';
-
-  feedbackEl.innerHTML = `
-    <div class="chat-bubble" style="background: ${bgColor}; border: 1px solid ${borderColor}; color: ${textColor}; font-size: 0.85rem; border-bottom-left-radius: 4px;">
-      <strong>${icon} ${choice.isGood ? 'Good!' : 'アドバイス'}</strong><br>
-      ${choice.feedback}
-      <div style="margin-top: 4px; font-size: 0.78rem; opacity: 0.7;">スコア: ${choice.score}点</div>
-      ${matchInfo}
-    </div>
-  `;
-
-  chatArea.appendChild(feedbackEl);
-  scrollChatToBottom();
+      const nextStep = scenario.steps[state.currentStep];
+      $('#rp-step').textContent = state.currentStep + 1;
+      if (nextStep?.situation) {
+        $('#situation-bar').style.display = 'flex';
+        $('#situation-text').textContent = nextStep.situation;
+      } else {
+        $('#situation-bar').style.display = 'none';
+      }
+      renderFreeSpeechUI(nextStep.choices);
+    });
+  } else {
+    // 最終ステップ：結果画面へ
+    const recordingBlob = await stopRecording();
+    stopSpeechRecognition();
+    window.speechSynthesis?.cancel();
+    setTimeout(() => showResult(recordingBlob), 500);
+  }
 }
 
 // ========================================
@@ -824,26 +931,14 @@ async function showResult(recordingBlob = null) {
     <p class="rank-desc">${rankDesc}</p>
   `;
 
-  // フィードバック一覧
+  // 点数・コメントは排除（フィードバック一覧は非表示）
   const feedbackContainer = $('#result-feedback');
-  feedbackContainer.innerHTML = `
-    <div class="feedback-title">📊 各ステップの振り返り</div>
-    ${state.feedbacks.map(fb => `
-      <div class="feedback-item">
-        <span class="feedback-icon">${fb.isGood ? '✅' : '💡'}</span>
-        <div>
-          <strong>ステップ ${fb.step}</strong>（${fb.score}点）<br>
-          ${fb.userSpeech ? `<em>あなたの発話: 「${fb.userSpeech}」</em><br>` : ''}
-          ${fb.text}
-        </div>
-      </div>
-    `).join('')}
-  `;
+  feedbackContainer.innerHTML = '';
 
   showScreen('result');
   animateScore(percentage);
 
-  // 履歴を保存（日付・録音・スコア）
+  // 履歴を保存（日付・録音・スコア・会話文字起こし）
   try {
     await saveHistory({
       scenarioTitle: state.currentScenario.title,
@@ -852,6 +947,7 @@ async function showResult(recordingBlob = null) {
       rank,
       feedbacks: state.feedbacks,
       recording: recordingBlob || null,
+      transcript: state.conversationLog || [],
     });
   } catch (e) {
     console.warn('履歴保存エラー:', e);
@@ -918,6 +1014,12 @@ function init() {
   showScreen('top');
   updateVoiceModeUI();
 
+  // TTS用の音声リストを事前読み込み（ChromeでgetVoicesが空になる対策）
+  if (window.speechSynthesis) {
+    speechSynthesis.getVoices();
+    speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices();
+  }
+
   // タブ切り替え
   document.querySelectorAll('.nav-tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -927,8 +1029,17 @@ function init() {
       const target = document.getElementById(`tab-${tab.dataset.tab}`);
       if (target) target.classList.add('active');
       if (tab.dataset.tab === 'history') renderHistoryList();
+      // シナリオタブ表示時にマイク許可を事前取得（ロープレ開始時にダイアログを出さない）
+      if (tab.dataset.tab === 'scenarios' && navigator.mediaDevices?.getUserMedia) {
+        requestMicrophonePermissionOnce().catch(() => {});
+      }
     });
   });
+
+  // 初回表示時もシナリオタブならマイク許可を取得
+  if (navigator.mediaDevices?.getUserMedia) {
+    requestMicrophonePermissionOnce().catch(() => {});
+  }
 
   // 新規シナリオセット登録
   const btnAddSet = document.getElementById('btn-add-set');
@@ -982,7 +1093,7 @@ function init() {
   const promptStatus = document.getElementById('prompt-status');
 
   if (promptInput) {
-    promptInput.value = localStorage.getItem('roleplay_prompt') || '';
+    promptInput.value = ''; // ページ読み込み時はクリア
     promptInput.addEventListener('input', () => {
       localStorage.setItem('roleplay_prompt', promptInput.value);
     });
