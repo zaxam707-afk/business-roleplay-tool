@@ -1,0 +1,41 @@
+[
+  {
+    "id": "sample-1",
+    "title": "サンプルシナリオ",
+    "icon": "📞",
+    "category": "サンプル",
+    "description": "スクリプトファイルのフォーマット例です。",
+    "difficulty": 1,
+    "duration": "約2分",
+    "npcName": "相手役",
+    "npcIcon": "👔",
+    "playerRole": "あなた",
+    "playerIcon": "🧑‍💼",
+    "steps": [
+      {
+        "situation": "状況説明（任意）",
+        "npcMessage": "相手のセリフ",
+        "choices": [
+          {
+            "text": "選択肢1のテキスト",
+            "score": 100,
+            "feedback": "この選択に対するフィードバック",
+            "isGood": true
+          },
+          {
+            "text": "選択肢2のテキスト",
+            "score": 50,
+            "feedback": "フィードバック",
+            "isGood": false
+          },
+          {
+            "text": "選択肢3のテキスト",
+            "score": 20,
+            "feedback": "フィードバック",
+            "isGood": false
+          }
+        ]
+      }
+    ]
+  }
+]
